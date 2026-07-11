@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 
 from aster.config import COGS
+from aster.db import init_db
 from aster.utils.logger import logger
 
 
@@ -16,6 +17,9 @@ class Aster(commands.Bot):
         )
 
     async def setup_hook(self):
+
+        # 長期記憶用のテーブルが無ければ作成する(既にあれば何もしない)
+        init_db()
 
         for cog in COGS:
             await self.load_extension(cog)

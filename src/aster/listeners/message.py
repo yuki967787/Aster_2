@@ -1,4 +1,5 @@
 import asyncio
+import io
 
 import discord
 from discord.ext import commands
@@ -10,7 +11,9 @@ from aster.error_messages import (
     get_failed_message,
     get_unknown_message,
 )
+from aster.handwriting import render_note
 from aster.memory import ConversationHistory
+from aster.note_messages import get_note_wait_message
 from aster.utils.logger import logger
 from aster.reply_manager import ReplyManager
 
@@ -68,7 +71,7 @@ class MessageListener(commands.Cog):
         async with message.channel.typing():
 
             try:
-                reply, emoji = ask_gemini(
+                reply, emoji, is_note = ask_gemini(
                     message.content,
                     history_context=history_context,
                     long_term_notes=long_term_notes,
@@ -96,10 +99,28 @@ class MessageListener(commands.Cog):
         # Aster自身の発言も短期記憶に残す(自分の発言と矛盾しないため)
         self.history.add(channel_id, "Aster", reply)
 
-        # ここから先はReplyManagerに送信を任せる
-        # (typing演出・分割送信・送信間隔はReplyManager自身が担当するため、
-        #  ここで重ねてtypingを出す必要は無い)
-        sent_messages = await self.reply_manager.send(message.channel, reply)
+        if is_note:
+            # 詳しい解説・数式は手書きノート画像にして送る
+            # (画像生成には少し時間がかかるので、先に一言挟んでから送る)
+            await message.channel.send(get_note_wait_message())
+
+            try:
+                async with message.channel.typing():
+                    image_bytes = render_note(reply)
+
+                await message.channel.send(
+                    file=discord.File(io.BytesIO(image_bytes), filename="note.png")
+                )
+                sent_messages = []
+            except Exception as e:
+                # 画像化に失敗しても、テキストとしては伝わるようにフォールバックする
+                logger.exception(f"ノート画像の生成に失敗しました: {e}")
+                sent_messages = await self.reply_manager.send(message.channel, reply)
+        else:
+            # 通常の会話はReplyManagerに送信を任せる
+            # (typing演出・分割送信・送信間隔はReplyManager自身が担当するため、
+            #  ここで重ねてtypingを出す必要は無い)
+            sent_messages = await self.reply_manager.send(message.channel, reply)
 
         # 絵文字が指定されていれば、最後に送ったメッセージにリアクションを付ける
         # (普段は淡々としているキャラなので、Geminiが「よほど心が動いた時」だけ

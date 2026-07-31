@@ -18,36 +18,42 @@ PROMPT = (BASE_DIR / "prompts" / "persona.txt").read_text(
 # 1メッセージあたりGeminiに渡す画像の上限枚数
 MAX_IMAGES = 6
 
-# 返答の最後に付けさせる絵文字タグの形式(例: [EMOJI: 🎉])
+# 返答の最後に付けさせる絵文字タグ・ノートモードタグの形式
+# 例: "...本文...\n[MODE: NOTE]\n[EMOJI: 🎉]"
 # 抜き出した後は本文から取り除くので、Discordには表示されない
-_EMOJI_TAG_PATTERN = re.compile(r"\[EMOJI:\s*(\S+)\]\s*$")
+_EMOJI_TAG_PATTERN = re.compile(r"\[EMOJI:\s*(\S+)\]")
+_MODE_NOTE_PATTERN = re.compile(r"\[MODE:\s*NOTE\]")
 
-# Geminiに絵文字タグの付け方を指示する追加プロンプト
-_EMOJI_INSTRUCTION = """
+# Geminiに出力フォーマットを指示する追加プロンプト
+_RESPONSE_FORMAT_INSTRUCTION = """
 
-# リアクション絵文字について
-返答の最後に、必要な場合だけ `[EMOJI: 絵文字]` の形で1つだけ絵文字を付けてください。
-普段は淡々としているキャラクターなので、よほど心が動いた瞬間(すごく嬉しい、驚いた、笑える等)
-以外は付けないでください。ほとんどの返答では付けなくて問題ありません。
-付けない場合は何も書かないでください(空のタグやダミーは不要です)。
+# 出力フォーマットについて
+- 数式を書く時は $E$ や \\frac{a}{b} のようなLaTeX記法を絶対に使わないでください。
+  E = V / (2πr) のように、誰でもそのまま読めるプレーンな書き方をしてください。
+- 数式を使った説明や、手順を追った詳しい解説をする場合は、返答の最後に
+  `[MODE: NOTE]` というタグを付けてください(手書きノート画像として送るための目印です)。
+  普通の雑談ではこのタグを付けないでください。
+- 返答の最後に、必要な場合だけ `[EMOJI: 絵文字]` の形で1つだけ絵文字を付けてください。
+  普段は淡々としているキャラクターなので、よほど心が動いた瞬間(すごく嬉しい、驚いた、笑える等)
+  以外は付けないでください。ほとんどの返答では付けなくて問題ありません。
+  付けない場合は何も書かないでください(空のタグやダミーは不要です)。
 """
 
 
-def _extract_emoji(text: str) -> tuple[str, str | None]:
+def _extract_tags(text: str) -> tuple[str, str | None, bool]:
     """
-    Geminiの返答テキストから末尾の [EMOJI: X] タグを取り除き、
-    (本文, 絵文字 or None) を返す。
+    Geminiの返答テキストから [EMOJI: X] と [MODE: NOTE] タグを取り除き、
+    (本文, 絵文字 or None, ノートモードかどうか) を返す。
     """
 
-    match = _EMOJI_TAG_PATTERN.search(text)
+    is_note = bool(_MODE_NOTE_PATTERN.search(text))
+    text = _MODE_NOTE_PATTERN.sub("", text)
 
-    if not match:
-        return text, None
+    emoji_match = _EMOJI_TAG_PATTERN.search(text)
+    emoji = emoji_match.group(1) if emoji_match else None
+    text = _EMOJI_TAG_PATTERN.sub("", text)
 
-    emoji = match.group(1)
-    body = text[: match.start()].rstrip()
-
-    return body, emoji
+    return text.strip(), emoji, is_note
 
 
 def ask_gemini(
@@ -55,7 +61,7 @@ def ask_gemini(
     history_context: str = "",
     long_term_notes: str = "",
     images: list[tuple[bytes, str]] | None = None,
-) -> tuple[str, str | None]:
+) -> tuple[str, str | None, bool]:
     """
     Geminiへメッセージを送り、返答を取得する。
 
@@ -67,10 +73,10 @@ def ask_gemini(
         (それ以上は呼び出し側で絞り込んでいても、念のためここでも切り詰める)。
     どれも無ければ、その項目は無いものとして扱う。
 
-    戻り値: (返答本文, リアクション絵文字 or None)
+    戻り値: (返答本文, リアクション絵文字 or None, ノートモードかどうか)
     """
 
-    sections = [PROMPT + _EMOJI_INSTRUCTION]
+    sections = [PROMPT + _RESPONSE_FORMAT_INSTRUCTION]
 
     if long_term_notes:
         sections.append(f"# このユーザーについて覚えていること\n{long_term_notes}")
@@ -92,7 +98,7 @@ def ask_gemini(
         contents=contents,
     )
 
-    return _extract_emoji(response.text.strip())
+    return _extract_tags(response.text.strip())
 
 
 IMAGE_DESCRIPTION_PROMPT = """\

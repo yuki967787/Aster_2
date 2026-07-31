@@ -16,3 +16,7 @@ logs/
 
 # VS Code
 .vscode/
+
+# 二次配布禁止ライセンスのフォント(手元にのみ配置。BOOTHから個別にダウンロードすること)
+src/aster/assets/fonts/pyos.otf
+src/aster/assets/fonts/pyos.ttf

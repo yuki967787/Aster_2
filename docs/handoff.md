@@ -1,4 +1,4 @@
-# Aster 引き継ぎ書(2026-07-31 時点)
+# Aster 引き継ぎ書(2026-07-31 時点・第2版)
 
 このセッションでの作業のまとめです。次にこのプロジェクトを見るAI(Claude/ChatGPT問わず)は、まずこのファイル全体を読んでから着手してください。
 
@@ -6,30 +6,33 @@
 
 ## 1. プロジェクト概要
 
-「Aster」は、Discord上で動作する人格付きAIアシスタント。単なる質問応答Botではなく、**「AIアシスタント」ではなく対等な友達**として自然に会話することを目指している。文章生成はGemini API。
+「Aster」は、Discord上で動作する人格付きAIアシスタント。単なる質問応答Botではなく、**「AIアシスタント」ではなく対等な友達(少しだけ恋愛要素あり)**として自然に会話することを目指している。文章生成はGemini API。
 
-- GitHub: https://github.com/yuki967787/Aster_2 (Public。旧リポジトリ`Aster`から移行済み)
+- GitHub: https://github.com/yuki967787/Aster_2 (Public)
 - 開発環境: Windows / VS Code / Python venv(`.venv`)
-- リポジトリ構成は `src/aster/` パッケージ形式(下記「4. ファイル構成」参照)
-- **実行時は`src`をカレントディレクトリにして`python -m aster.main`する必要がある**(リポジトリ直下からだとModuleNotFoundError。恒久対策としてpyproject.tomlでのpip install -e化が未着手)
+- **実行時は`src`をカレントディレクトリにして`python -m aster.main`する必要がある**(または`set PYTHONPATH=src`を使う方法でも可)。恒久対策としてpyproject.tomlでのpip install -e化が未着手
+- **将来的な目標**: このBotを友達に配布したいと考えている。配布先のユーザーごとに好きな性格へカスタマイズできるようにしたい、という構想がある(現時点では未着手。persona.txtが1つのファイルにハードコードされているので、ユーザーごとに切り替えられる設計への変更が今後必要)
 
 ---
 
 ## 2. 開発ロードマップと現在地
 
 ```
-Phase 1(土台)                          ✅ 完了
-Phase 2-1(Discord接続の基礎)            ✅ 完了
-Phase 2-2(会話基盤: ReplyManager等)     ✅ 完了
-Phase 2-3(Memory: 短期記憶/長期記憶)     ✅ 完了
-Phase 2-5(添付画像対応)                 ✅ 完了 ← 今回ここまで
-  - リアクション/スタンプ/Embedは未着手のまま残っている
-Phase 2-4(Character: 感情/照れ屋等)     🔲 未着手(下記「6. 保留中」参照、今まさに着手しようとしている)
-Phase 3(PDF解析/OCR)                    🔲 未着手
-Phase 4(VOICEVOX/VC参加/読み上げ)        🔲 未着手(希望音声: ナースロボ＿タイプT ノーマル)
+Phase 1(土台)                          完了
+Phase 2-1(Discord接続の基礎)            完了
+Phase 2-2(会話基盤: ReplyManager等)     完了
+Phase 2-3(Memory: 短期記憶/長期記憶)     完了
+Phase 2-5(添付画像対応)                 完了
+Phase 2-5(スタンプ=絵文字リアクション)   完了 ← 今回ここまで
+Phase 2-5(リアクション/Embed)           未着手(スタンプ以外)
+Phase 2-4(Character: 感情/照れ屋等)     persona.txt調整で一部実現済み、継続調整中
+手書きノート画像機能(数式・詳細解説用)   完了 ← 今回ここまで
+Phase 3(PDF解析/OCR)                    未着手
+Phase 4(VOICEVOX/VC参加/読み上げ)        未着手(希望音声: ナースロボ＿タイプT ノーマル)
+配布・性格カスタマイズ機能               未着手(将来構想。6章参照)
 ```
 
-**次にやるべきこと**: persona.txtの性格設計をGeminiに考え直してもらう(6章参照)。その後Phase 2-4の残り(リアクション/スタンプ/Embed)、Phase 3以降。
+次にやるべきこと: 実機テスト(まだ一度も通しで試せていない機能が複数ある)。その後Phase 2-5の残り(リアクション・Embed)、Phase 3、配布・カスタマイズ機能。
 
 ---
 
@@ -37,11 +40,14 @@ Phase 4(VOICEVOX/VC参加/読み上げ)        🔲 未着手(希望音声: ナ�
 
 - `/chat`のようなスラッシュコマンドは無し。メンションされたら返信する方式(`on_message`)のみ。
 - 返信はDiscordの引用返信(reply)を使わず、通常送信(send)で統一。
-- 短期記憶はチャンネル単位・直近20件まで(`memory.py`の`ConversationHistory`)。
-- 長期記憶の自動抽出は「発言が5分間止まったら実行」のデバウンス方式。保存形式は自由記述の`notes`1本。
-- **添付画像対応**: 1メッセージ最大6枚(`MAX_IMAGES`)。画像そのものは短期記憶に残さず、Geminiに120字程度で説明させたテキストを代わりに残す(`describe_image()`)。これが無いと数ターン後に画像の内容を忘れてしまう。
-- **モデル振り分け**(レート制限対策): 通常会話・画像説明はメインモデル(`GEMINI_MODEL_MAIN`、精度重視のため画像系もこちら)、長期記憶抽出は軽量モデル(`GEMINI_MODEL_LIGHT`)。`.env`で上書き可能。
-- コード修正のルール: **どんな変更も「変更前後の理由と影響範囲」を説明してから実施する**(次のAIも踏襲すること)。
+- 短期記憶はチャンネル単位・直近20件まで。長期記憶は自由記述`notes`1本、5分デバウンスで自動抽出。
+- 添付画像対応: 1メッセージ最大6枚。画像内容はGeminiに120字程度で説明させたテキストとして短期記憶に残す。
+- モデル振り分け(レート制限対策): 通常会話・画像系はメインモデル(`GEMINI_MODEL_MAIN`)、長期記憶抽出は軽量モデル(`GEMINI_MODEL_LIGHT`)。
+  - 注意: Geminiのモデル名は頻繁に変わる/廃止される。2026年7月31日時点でのデフォルトは`gemini-3.6-flash` / `gemini-3.5-flash-lite`だが、404エラーが出たらモデル一覧ページ(https://ai.google.dev/gemini-api/docs/models)で現行モデル名を確認して`.env`か`config.py`のデフォルト値を更新すること。
+- persona.txt: 一度Geminiに再設計を依頼し、「友達以上恋人未満」の案から嫉妬的な表現などを削って「少し恋愛要素のある対等な友達」に調整。「笑」は1返信に最大1つ、真剣な相談には付けない。名前呼びは9割省略。
+- 絵文字リアクション(スタンプ): Gemini自身に文脈で判断させる方式。`ask_gemini()`の返答末尾に`[EMOJI: 🎉]`のようなタグを付けさせ、コード側で抽出して`add_reaction()`。普段は淡々、心が動いた時だけ稀に付く設計。
+- 手書きノート画像: 数式・詳しい解説の時は毎回、Gemini自身が返答末尾に`[MODE: NOTE]`タグを付ける設計。画像送信の前に「ちょっと待っててね」のような一言を先に送ってから生成する。
+- コード修正のルール: どんな変更も「変更前後の理由と影響範囲」を説明してから実施する(次のAIも踏襲すること)。
 
 ---
 
@@ -50,33 +56,40 @@ Phase 4(VOICEVOX/VC参加/読み上げ)        🔲 未着手(希望音声: ナ�
 ```
 Aster/
 ├── .env                      # 実際のAPIキー(Git管理外)
-├── .gitignore
+├── .gitignore                 # *.db, .env, pyos.otf/ttf(ライセンス上コミット不可) 等を除外
 ├── README.md
-├── requirements.txt           # SQLAlchemy, google-genai, discord.py, pillow, pymupdf 等
-├── test.py                    # Gemini疎通確認用の使い捨てスクリプト(削除するか未決定)
+├── requirements.txt
+├── test.py                    # 使い捨てスクリプト(削除するか未決定)
 ├── docs/
 │   └── handoff.md             # このファイル
 ├── prompts/
-│   ├── persona.txt            # Asterの人格プロンプト(★このあとGeminiに再設計を依頼予定)
+│   ├── persona.txt            # Asterの人格プロンプト(継続調整中)
 │   ├── developer.txt          # 空(未使用)
 │   └── rules.txt              # 空(未使用)
 └── src/
     └── aster/
-        ├── main.py             # エントリーポイント。Aster()を作ってrun()するだけ
-        ├── bot.py              # Asterクラス(commands.Bot継承)。setup_hookでinit_db()とCog読込
-        ├── config.py           # .env読込、BASE_DIR、DISCORD_TOKEN、GEMINI_API_KEY、GEMINI_MODEL_MAIN/LIGHT、COGS
-        ├── ai.py               # Gemini通信。ask_gemini() / describe_image() / extract_memory_update()
-        ├── db.py               # 長期記憶の永続化(SQLAlchemy + SQLite、aster.db)
-        ├── memory.py           # 短期記憶(ConversationHistory、チャンネル単位・直近20件)
-        ├── reply_manager.py    # 返信の演出(typing/分割送信/送信間隔)
+        ├── main.py             # エントリーポイント
+        ├── bot.py              # Asterクラス。setup_hookでinit_db()とCog読込
+        ├── config.py           # .env読込、BASE_DIR、GEMINI_MODEL_MAIN/LIGHT等
+        ├── ai.py               # Gemini通信。ask_gemini()はtuple(本文, 絵文字orNone, ノートモードか)を返す
+        ├── formatter.py        # NEW: LaTeX/Markdown除去、分数(A/B)検出
+        ├── handwriting.py      # NEW: 手書きノート画像の描画(B5風・分数縦組み・署名)
+        ├── note_messages.py    # NEW: ノート送信前の「ちょっと待ってて」系セリフ
+        ├── db.py               # 長期記憶の永続化(SQLAlchemy + SQLite)
+        ├── memory.py           # 短期記憶(ConversationHistory)
+        ├── reply_manager.py    # 返信演出。send()は送信したMessageのリストを返す(リアクション付与用)
         ├── error_messages.py   # エラー時のランダム返答文
+        ├── assets/
+        │   └── fonts/
+        │       ├── Yomogi-Regular.ttf   # フォールバック用フォント(OFL、Git管理下)
+        │       └── pyos.otf             # 本命フォント(手元のみ配置、.gitignore対象)
         ├── cogs/
-        │   ├── ping.py         # /ping スラッシュコマンド
-        │   └── help.py         # /help スラッシュコマンド
+        │   ├── ping.py
+        │   └── help.py
         ├── listeners/
         │   └── message.py      # メイン処理。on_messageで全部つながる場所
         └── utils/
-            └── logger.py       # ロガー設定
+            └── logger.py
 ```
 
 ---
@@ -84,43 +97,45 @@ Aster/
 ## 5. `listeners/message.py` の処理フロー(最重要ファイル)
 
 ```
-メッセージ受信
-  ↓
-Bot自身の発言なら無視
-  ↓
+メッセージ受信 → Bot自身なら無視
 添付画像を抽出(最大6枚) → あればGeminiに説明させて短期記憶用テキストに変換
-  ↓
-短期記憶に記録 → history_context取得(チャンネル単位・直近20件)
-  ↓
-長期記憶(notes)をDBから取得(ユーザーID単位)
-  ↓
-typing表示しながら ask_gemini(message, history_context, long_term_notes, images) を呼ぶ
-  ↓
-  成功 → Asterの返答も短期記憶に記録 → ReplyManagerで送信(演出付き)
-         → 5分デバウンスで長期記憶の自動抽出をスケジュール(軽量モデル使用)
-  失敗 → error_messagesからランダムな一言を通常送信して終了
+短期記憶に記録 → history_context取得
+長期記憶(notes)をDBから取得
+typing表示しながら ask_gemini(...) を呼ぶ → (本文, 絵文字, is_note) を受け取る
+
+成功時:
+  Asterの返答を短期記憶に記録
+  is_note=True  → 「ちょっと待ってて」を先に送信 → render_note()で画像化 → 画像送信
+  is_note=False → ReplyManagerで通常送信(演出付き)
+  emojiがあれば最後に送ったメッセージにadd_reaction()
+  5分デバウンスで長期記憶の自動抽出をスケジュール(軽量モデル使用)
+
+失敗時: error_messagesからランダムな一言を送って終了
 ```
 
 ---
 
-## 6. 保留中・今まさに相談中の課題
+## 6. 保留中・未着手の課題
 
-- **persona.txtの性格がまだ合っていない**: 「笑」を多用しすぎてムカつく、というフィードバックが直近で出た。これまで人力でpersona.txtを細かく調整してきたが、今回は**Gemini自身に性格設計を考え直してもらう**方向に切り替えることになった。次のAIは、ユーザーに送るための「Geminiへの依頼文」を作るところから着手すること。
-- 過去に直した調整点(参考: 新しい依頼文を作る際に矛盾させないよう意識すること):
-  - わからない事には茶化さず詳細に解説する
-  - 名前呼びは9割省略、呼ぶのは強調したい時だけ
-  - 改行禁止ルールに「詳細解説の時は例外」を追加済み
-- `test.py`(使い捨てスクリプト)、`prompts/developer.txt`・`prompts/rules.txt`(空ファイル)の扱いは未決定のまま。
-- Phase 2-4(感情/照れ屋/ランダムリアクション)、Phase 2-5の残り(リアクション/スタンプ/Embed)は未着手。
+- 実機テスト未実施の機能が複数ある: スタンプ(絵文字リアクション)、手書きノート画像、モデル振り分け後のpersona.txt新方向。これらはまだ一度も通しでDiscord上で確認できていない。次のAIはまずここから。
+- 友達への配布・性格カスタマイズ構想(1章参照): 現状`persona.txt`は1ファイル固定。将来的にはユーザー(サーバー)ごとに性格を切り替えられる設計が必要になる。想定される方向性の一例(未確定):
+  - `db.py`の`UserProfile`のような形で、サーバー/ユーザーごとに使用するpersona.txtのパスや性格設定を持たせる
+  - Discordのスラッシュコマンドで性格をある程度選べるようにする(ただし「`/chat`のようなコマンドは無し」という過去の決定と矛盾しないよう、設定系コマンドは別枠として扱うか要検討)
+  - これは大きな設計変更になるため、着手前に必ずユーザーと方針をすり合わせること
+- `test.py`、`prompts/developer.txt`・`prompts/rules.txt`(空ファイル)の扱いは未決定。
+- Phase 2-5の残り(リアクション・Embed)、Phase 3(PDF解析/OCR)、Phase 4(VOICEVOX)は未着手。
+- Geminiのモデル名は変わりやすいので、404エラーが出たら3章の注意点を参照。
 
 ---
 
 ## 7. 動作確認・デバッグ用コマンド
 
-```bash
-# 起動(必ずsrcディレクトリから)
-cd src
-python -m aster.main
+```
+# 起動(Windowsの場合)
+set PYTHONPATH=src && python -m aster.main
+
+# 起動(macOS/Linuxの場合)
+cd src && python -m aster.main
 
 # 長期記憶(notes)の中身を直接確認したい時
 python3 -c "from aster.db import get_notes; print(get_notes(DiscordのユーザーID))"
@@ -132,6 +147,8 @@ python3 -c "from aster.db import get_notes; print(get_notes(Discordのユーザ�
 
 ## 8. 次のAIへ
 
-このプロジェクトのオーナー(ゆうき)は、コードだけでなく**「なぜその設計にするか」の説明**を重視する。大きな変更の前には必ず理由と影響範囲を説明し、合意を得てから実装すること。場当たり的な修正ではなく、長期的に育てるプロジェクトとして扱うこと。
+このプロジェクトのオーナー(ゆうき)は、コードだけでなく「なぜその設計にするか」の説明を重視する。大きな変更の前には必ず理由と影響範囲を説明し、合意を得てから実装すること。場当たり的な修正ではなく、長期的に育てるプロジェクトとして扱うこと。
 
-また、セッション途中でクレジット切れ・GitHubリポジトリ移行が起きた実績があるため、**作業内容はこまめにコミットを促す・引き継ぎ書を随時更新する**ことを意識すること。
+セッション途中でのクレジット切れ・GitHubリポジトリ移行が過去に発生している。作業内容はこまめにコミットを促し、引き継ぎ書も区切りの良いタイミングで更新すること。
+
+配布・性格カスタマイズ構想はまだ「言葉にしただけ」の段階なので、実装に入る前に必ずゆうきと具体的な仕様(どこまで自由に変えられるか、UIはどうするか等)を相談すること。

@@ -22,17 +22,9 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from aster.config import BASE_DIR
 from aster.formatter import Block, FractionLine, TextLine, format_for_note
 
-_ASSETS_DIR = BASE_DIR / "src" / "aster" / "assets"
-_FONT_DIR = _ASSETS_DIR / "fonts"
-
-# 手元に置いてもらう本命フォント(無ければYomogiにフォールバック)
-_PREFERRED_FONT_CANDIDATES = ["pyos.otf", "pyos.ttf"]
-_FALLBACK_FONT = "Yomogi-Regular.ttf"
-
-# 画像サイズ・余白(B5ルーズリーフをイメージした縦長め)
+# 画像サイズ・余白・フォントサイズ等の定数（これらを先に定義する）
 IMAGE_WIDTH = 800
 MARGIN_TOP = 60
 MARGIN_BOTTOM = 60
@@ -41,6 +33,56 @@ MARGIN_RIGHT = 50
 LINE_HEIGHT = 46
 FONT_SIZE = 30
 FRACTION_FONT_SIZE = 26
+
+# --- フォントパス解決処理 ---
+_FONT_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
+
+_PREFERRED_FONT_CANDIDATES = [
+    "pyos.otf",
+    "pyos.ttf",
+    "PyosuFontFree.otf",
+    "PyosuFontFree .otf",
+    "PyosuFontFree.ttf",
+]
+_FALLBACK_FONT = "Yomogi-Regular.ttf"
+
+
+def _resolve_font_path() -> Path:
+    print(f"[Debug] フォントを探している場所: {_FONT_DIR.resolve()}")
+
+    # 1. まず本命フォントを探す
+    for name in _PREFERRED_FONT_CANDIDATES:
+        candidate = _FONT_DIR / name
+        if candidate.exists():
+            print(f"[Info] 本命フォントを発見しました: {candidate.name}")
+            return candidate
+
+    # 2. 次にフォールバック(Yomogi)を探す
+    fallback = _FONT_DIR / _FALLBACK_FONT
+    if fallback.exists():
+        print(f"[Info] Yomogiフォントを発見しました: {fallback.name}")
+        return fallback
+
+    # 3. どちらも無ければ fonts フォルダ内にある既存の .ttf / .otf を探す
+    font_files = list(_FONT_DIR.glob("*.otf")) + list(_FONT_DIR.glob("*.ttf"))
+    if font_files:
+        print(f"[Info] フォルダ内のフォントを発見しました: {font_files[0].name}")
+        return font_files[0]
+
+    # 4. 中身を表示してエラー
+    existing_files = [p.name for p in _FONT_DIR.glob("*")] if _FONT_DIR.exists() else "フォルダが存在しません"
+    print(f"[Debug] {_FONT_DIR} の中身: {existing_files}")
+
+    raise FileNotFoundError(
+        f"フォントファイルが見つかりません！ '{_FONT_DIR}' 内を確認してください。"
+    )
+
+
+# 定数が定義されたあとにフォントを読み込む
+_font_path = _resolve_font_path()
+_font = ImageFont.truetype(str(_font_path), FONT_SIZE)
+_fraction_font = ImageFont.truetype(str(_font_path), FRACTION_FONT_SIZE)
+_signature_font = ImageFont.truetype(str(_font_path), 22)
 
 
 def _resolve_font_path() -> Path:

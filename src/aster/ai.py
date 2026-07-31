@@ -1,6 +1,9 @@
-from google import genai
+import re
 
-from aster.config import BASE_DIR, GEMINI_API_KEY, GEMINI_MODEL
+from google import genai
+from google.genai import types
+
+from aster.config import BASE_DIR, GEMINI_API_KEY, GEMINI_MODEL_LIGHT, GEMINI_MODEL_MAIN
 
 # Geminiクライアント
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -12,12 +15,47 @@ PROMPT = (BASE_DIR / "prompts" / "persona.txt").read_text(
     encoding="utf-8"
 )
 
+# 1メッセージあたりGeminiに渡す画像の上限枚数
+MAX_IMAGES = 6
+
+# 返答の最後に付けさせる絵文字タグの形式(例: [EMOJI: 🎉])
+# 抜き出した後は本文から取り除くので、Discordには表示されない
+_EMOJI_TAG_PATTERN = re.compile(r"\[EMOJI:\s*(\S+)\]\s*$")
+
+# Geminiに絵文字タグの付け方を指示する追加プロンプト
+_EMOJI_INSTRUCTION = """
+
+# リアクション絵文字について
+返答の最後に、必要な場合だけ `[EMOJI: 絵文字]` の形で1つだけ絵文字を付けてください。
+普段は淡々としているキャラクターなので、よほど心が動いた瞬間(すごく嬉しい、驚いた、笑える等)
+以外は付けないでください。ほとんどの返答では付けなくて問題ありません。
+付けない場合は何も書かないでください(空のタグやダミーは不要です)。
+"""
+
+
+def _extract_emoji(text: str) -> tuple[str, str | None]:
+    """
+    Geminiの返答テキストから末尾の [EMOJI: X] タグを取り除き、
+    (本文, 絵文字 or None) を返す。
+    """
+
+    match = _EMOJI_TAG_PATTERN.search(text)
+
+    if not match:
+        return text, None
+
+    emoji = match.group(1)
+    body = text[: match.start()].rstrip()
+
+    return body, emoji
+
 
 def ask_gemini(
     message: str,
     history_context: str = "",
     long_term_notes: str = "",
-) -> str:
+    images: list[tuple[bytes, str]] | None = None,
+) -> tuple[str, str | None]:
     """
     Geminiへメッセージを送り、返答を取得する。
 
@@ -25,10 +63,14 @@ def ask_gemini(
         「直近の会話」の文字列(短期記憶)。
     long_term_notes: db.get_notes() で得た、このユーザーについて
         覚えている内容(長期記憶)。
-    どちらも空文字なら、その項目は無いものとして扱う。
+    images: [(画像バイト列, mime_type), ...] のリスト。多くてもMAX_IMAGES枚まで使う
+        (それ以上は呼び出し側で絞り込んでいても、念のためここでも切り詰める)。
+    どれも無ければ、その項目は無いものとして扱う。
+
+    戻り値: (返答本文, リアクション絵文字 or None)
     """
 
-    sections = [PROMPT]
+    sections = [PROMPT + _EMOJI_INSTRUCTION]
 
     if long_term_notes:
         sections.append(f"# このユーザーについて覚えていること\n{long_term_notes}")
@@ -38,10 +80,43 @@ def ask_gemini(
 
     sections.append(f"ユーザー: {message}")
 
-    contents = "\n\n".join(sections)
+    # テキスト部分をひとまとめにし、画像パートを後ろに続ける
+    # (google-genai SDKはcontentsにテキストと画像パートを混在させたリストを渡せる)
+    contents: list = ["\n\n".join(sections)]
+
+    for data, mime_type in (images or [])[:MAX_IMAGES]:
+        contents.append(types.Part.from_bytes(data=data, mime_type=mime_type))
 
     response = client.models.generate_content(
-        model=GEMINI_MODEL,
+        model=GEMINI_MODEL_MAIN,
+        contents=contents,
+    )
+
+    return _extract_emoji(response.text.strip())
+
+
+IMAGE_DESCRIPTION_PROMPT = """\
+これらの画像に何が写っているか、次の会話でも参照できるように
+日本語で120字程度の客観的な説明文にまとめてください。
+キャラクターとして振る舞わず、事実の説明だけを簡潔に書いてください。
+"""
+
+
+def describe_image(images: list[tuple[bytes, str]]) -> str:
+    """
+    画像の内容を短い説明文(120字程度)にして返す。
+
+    短期記憶(会話履歴)には画像そのものではなくこのテキストだけを残すことで、
+    データ量を抑えつつ、後の会話でも「何が写っていたか」を参照できるようにする。
+    """
+
+    contents: list = [IMAGE_DESCRIPTION_PROMPT]
+
+    for data, mime_type in images[:MAX_IMAGES]:
+        contents.append(types.Part.from_bytes(data=data, mime_type=mime_type))
+
+    response = client.models.generate_content(
+        model=GEMINI_MODEL_MAIN,
         contents=contents,
     )
 
@@ -77,7 +152,7 @@ def extract_memory_update(existing_notes: str, recent_exchange: str) -> str:
     )
 
     response = client.models.generate_content(
-        model=GEMINI_MODEL,
+        model=GEMINI_MODEL_LIGHT,
         contents=contents,
     )
 

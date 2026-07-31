@@ -3,7 +3,7 @@ import asyncio
 import discord
 from discord.ext import commands
 
-from aster.ai import ask_gemini, extract_memory_update
+from aster.ai import MAX_IMAGES, ask_gemini, describe_image, extract_memory_update
 from aster.db import get_notes, save_notes
 from aster.error_messages import (
     get_busy_message,
@@ -40,8 +40,25 @@ class MessageListener(commands.Cog):
         user_id = message.author.id
         display_name = message.author.display_name
 
+        # 添付画像を取り出す(最大MAX_IMAGES枚。それ以外の添付は今回は無視)
+        images = await self._extract_images(message)
+
+        # 短期記憶用のテキストを組み立てる
+        # 画像がある場合は、Geminiに内容を説明させたテキストを残す
+        # (画像そのものは記憶に残さないので、これが無いと後の会話で内容を思い出せなくなる)
+        history_text = message.content
+
+        if images:
+            try:
+                caption = describe_image(images)
+                history_text = f"{history_text} [添付画像: {caption}]".strip()
+            except Exception as e:
+                # 説明の生成に失敗しても会話自体は止めず、簡易な目印だけ残す
+                logger.exception(f"画像の説明生成に失敗しました: {e}")
+                history_text = f"{history_text} [画像を{len(images)}枚送信]".strip()
+
         # 今回のユーザー発言を短期記憶に記録
-        self.history.add(channel_id, display_name, message.content)
+        self.history.add(channel_id, display_name, history_text)
         history_context = self.history.get_context(channel_id)
 
         # 長期記憶(このユーザーについて覚えていること)を読み込む
@@ -51,10 +68,11 @@ class MessageListener(commands.Cog):
         async with message.channel.typing():
 
             try:
-                reply = ask_gemini(
+                reply, emoji = ask_gemini(
                     message.content,
                     history_context=history_context,
                     long_term_notes=long_term_notes,
+                    images=images,
                 )
 
                 if len(reply) > 1900:
@@ -81,10 +99,49 @@ class MessageListener(commands.Cog):
         # ここから先はReplyManagerに送信を任せる
         # (typing演出・分割送信・送信間隔はReplyManager自身が担当するため、
         #  ここで重ねてtypingを出す必要は無い)
-        await self.reply_manager.send(message.channel, reply)
+        sent_messages = await self.reply_manager.send(message.channel, reply)
+
+        # 絵文字が指定されていれば、最後に送ったメッセージにリアクションを付ける
+        # (普段は淡々としているキャラなので、Geminiが「よほど心が動いた時」だけ
+        #  絵文字を返す想定 → ほとんどの場合はNoneで何も付かない)
+        if emoji and sent_messages:
+            try:
+                await sent_messages[-1].add_reaction(emoji)
+            except discord.HTTPException as e:
+                # 絵文字が無効(Discordが認識できない文字列)等で失敗しても
+                # 会話自体は成立しているので、ログだけ残して続行する
+                logger.warning(f"リアクションの追加に失敗しました: {e}")
 
         # 会話が一区切りついたら長期記憶を更新するようスケジュールする
         self._schedule_memory_extraction(user_id, display_name, channel_id)
+
+    async def _extract_images(
+        self, message: discord.Message
+    ) -> list[tuple[bytes, str]]:
+        """
+        メッセージの添付ファイルから画像だけを取り出し、
+        [(バイト列, mime_type), ...] のリストにして返す。
+        最大 aster.ai.MAX_IMAGES 枚まで(超えた分は無視する)。
+        """
+
+        images: list[tuple[bytes, str]] = []
+
+        for attachment in message.attachments:
+            if len(images) >= MAX_IMAGES:
+                break
+
+            if not attachment.content_type or not attachment.content_type.startswith(
+                "image/"
+            ):
+                continue
+
+            try:
+                data = await attachment.read()
+                images.append((data, attachment.content_type))
+            except discord.HTTPException as e:
+                logger.warning(f"画像の取得に失敗しました: {e}")
+
+        return images
 
     def _schedule_memory_extraction(
         self, user_id: int, display_name: str, channel_id: int

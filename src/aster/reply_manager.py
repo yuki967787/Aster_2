@@ -36,7 +36,7 @@ class ReplyManager:
         self,
         channel: discord.abc.Messageable,
         text: str,
-    ) -> None:
+    ) -> list[discord.Message]:
         """
         返信を送信する。
 
@@ -46,16 +46,24 @@ class ReplyManager:
             Discordの送信先
         text
             Geminiが生成した文章
+
+        Returns
+        -------
+        list[discord.Message]
+            実際に送信したメッセージのリスト(分割送信された場合は複数)。
+            呼び出し側でリアクションを付けたい時などに使う。
         """
 
         messages = self._split_message(text)
+        sent: list[discord.Message] = []
 
         for message in messages:
 
             async with channel.typing():
                 await asyncio.sleep(random.uniform(0.4, 1.0))
 
-            await channel.send(message)
+            sent_message = await channel.send(message)
+            sent.append(sent_message)
 
             if message != messages[-1]:
                 await asyncio.sleep(
@@ -64,6 +72,8 @@ class ReplyManager:
                         self.MAX_DELAY,
                     )
                 )
+
+        return sent
 
     def _split_message(self, text: str) -> list[str]:
         """

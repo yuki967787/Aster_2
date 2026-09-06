@@ -5,6 +5,7 @@ import discord
 from discord.ext import commands
 
 from aster.ai import MAX_IMAGES, ask_gemini, describe_image, extract_memory_update
+from aster.pdf import MAX_PDF_PAGES, process_pdf
 from aster.db import get_notes, save_notes
 from aster.error_messages import (
     get_busy_message,
@@ -43,8 +44,33 @@ class MessageListener(commands.Cog):
         user_id = message.author.id
         display_name = message.author.display_name
 
-        # 添付画像を取り出す(最大MAX_IMAGES枚。それ以外の添付は今回は無視)
+        # 添付画像を取り出す(最大MAX_IMAGES枚)。
         images = await self._extract_images(message)
+
+        # PDF添付があれば、PyMuPDF → 必要なページだけVision、の順で読み取る。
+        pdf_context = ""
+        pdf_history = ""
+        pdf_warning = ""
+
+        try:
+            pdf_data = await self._extract_pdf(message)
+
+            if pdf_data is not None:
+                pdf_result = process_pdf(pdf_data)
+                pdf_context = pdf_result.text
+                pdf_history = f"[添付PDF: {pdf_result.page_count}ページ]"
+
+                if pdf_result.unreadable_pages:
+                    pages = ", ".join(map(str, pdf_result.unreadable_pages))
+                    pdf_warning = (
+                        f"ごめん、PDFの{pages}ページ目はちょっと読み取りにくかったかも…。"
+                    )
+        except ValueError as e:
+            logger.warning(f"PDFの処理を中止しました: {e}")
+            pdf_warning = str(e)
+        except Exception as e:
+            logger.exception(f"PDFの読み取りに失敗しました: {e}")
+            pdf_warning = "ごめん、PDFをうまく読み取れなかったかも…。"
 
         # 短期記憶用のテキストを組み立てる
         # 画像がある場合は、Geminiに内容を説明させたテキストを残す
@@ -60,6 +86,9 @@ class MessageListener(commands.Cog):
                 logger.exception(f"画像の説明生成に失敗しました: {e}")
                 history_text = f"{history_text} [画像を{len(images)}枚送信]".strip()
 
+        if pdf_history:
+            history_text = f"{history_text} {pdf_history}".strip()
+
         # 今回のユーザー発言を短期記憶に記録
         self.history.add(channel_id, display_name, history_text)
         history_context = self.history.get_context(channel_id)
@@ -71,8 +100,15 @@ class MessageListener(commands.Cog):
         async with message.channel.typing():
 
             try:
+                ai_message = message.content
+                if pdf_context:
+                    ai_message = (
+                        f"{message.content}\n\n"
+                        f"# 添付PDFの内容\n{pdf_context}"
+                    ).strip()
+
                 chat_intro, reply, emoji, is_note = ask_gemini(
-                    message.content,
+                    ai_message,
                     history_context=history_context,
                     long_term_notes=long_term_notes,
                     images=images,
@@ -95,6 +131,10 @@ class MessageListener(commands.Cog):
 
                 await message.channel.send(reply)
                 return
+
+        # PDFの読み取りについて注意が必要なら、回答の前に一言伝える。
+        if pdf_warning:
+            await message.channel.send(pdf_warning)
 
         # Aster自身の発言も短期記憶に残す(自分の発言と矛盾しないため)
         # ノート本体だけでなく、チャット前置きがあればそちらも記録しておく
@@ -139,6 +179,32 @@ class MessageListener(commands.Cog):
 
         # 会話が一区切りついたら長期記憶を更新するようスケジュールする
         self._schedule_memory_extraction(user_id, display_name, channel_id)
+
+
+    async def _extract_pdf(self, message: discord.Message) -> bytes | None:
+        """
+        メッセージに添付されたPDFを1つだけ取得する。
+
+        現段階では1メッセージにつきPDFは1つに限定する。複数PDFを同時に
+        扱う設計は、コンテキスト量とページ上限の管理が複雑になるため、
+        今回は意図的に分離している。
+        """
+
+        for attachment in message.attachments:
+            content_type = attachment.content_type or ""
+            is_pdf = content_type == "application/pdf" or attachment.filename.lower().endswith(".pdf")
+
+            if not is_pdf:
+                continue
+
+            try:
+                data = await attachment.read()
+                return data
+            except discord.HTTPException as e:
+                logger.warning(f"PDFの取得に失敗しました: {e}")
+                return None
+
+        return None
 
     async def _extract_images(
         self, message: discord.Message

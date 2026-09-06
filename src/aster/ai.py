@@ -137,7 +137,10 @@ IMAGE_DESCRIPTION_PROMPT = """\
 """
 
 
-def describe_image(images: list[tuple[bytes, str]]) -> str:
+def describe_image(
+    images: list[tuple[bytes, str]],
+    prompt: str | None = None,
+) -> str:
     """
     画像の内容を短い説明文(120字程度)にして返す。
 
@@ -145,7 +148,7 @@ def describe_image(images: list[tuple[bytes, str]]) -> str:
     データ量を抑えつつ、後の会話でも「何が写っていたか」を参照できるようにする。
     """
 
-    contents: list = [IMAGE_DESCRIPTION_PROMPT]
+    contents: list = [prompt or IMAGE_DESCRIPTION_PROMPT]
 
     for data, mime_type in images[:MAX_IMAGES]:
         contents.append(types.Part.from_bytes(data=data, mime_type=mime_type))

@@ -6,6 +6,12 @@ formatter.pyが整形したBlockのリストを受け取り、「手書きノー
 Discordは通常のチャットでLaTeX($E$ みたいな数式記法)を描画してくれないため、
 数式や詳しい解説は、紙の上に手書き文字で書いたような画像にして送ることで読みやすくする。
 
+【重要】折り返しはここで行う。
+formatter.pyは文字数を見ず、テキストの意味的な整形(数式の分離など)だけを担当する。
+実際に「何文字で折り返すか」は、フォントサイズ・紙の幅によって変わるため、
+draw.textbbox() で実際の描画幅を測りながらここで折り返す。
+こうしておくと、将来フォントサイズや画像サイズを変えてもレイアウトが自動で最適化される。
+
 フォントについて:
 - 本命は「ぴょすふぉんと」(BOOTH配布、無料・商用可・ただし二次配布禁止)。
   ライセンス上Gitにはコミットできないため、手元で
@@ -18,21 +24,26 @@ from __future__ import annotations
 
 import io
 import random
+from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from aster.formatter import Block, FractionLine, TextLine, format_for_note
+from aster.formatter import Block, FormulaLine, FractionLine, TextLine, format_for_note
 
-# 画像サイズ・余白・フォントサイズ等の定数（これらを先に定義する）
+# 画像サイズ・余白・フォントサイズ等の定数
 IMAGE_WIDTH = 800
 MARGIN_TOP = 60
 MARGIN_BOTTOM = 60
 MARGIN_LEFT = 90  # 赤い縦線の右側から文字を書き始めるための余白
 MARGIN_RIGHT = 50
+MAX_WIDTH = IMAGE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT  # 実際に文字を置ける横幅
 LINE_HEIGHT = 46
 FONT_SIZE = 30
 FRACTION_FONT_SIZE = 26
+
+# 折り返し時に優先的に改行してよい文字(句読点・閉じ括弧・スペースの直後)
+_BREAK_CHARS = "、。)]）】」』 "
 
 # --- フォントパス解決処理 ---
 _FONT_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
@@ -48,62 +59,114 @@ _FALLBACK_FONT = "Yomogi-Regular.ttf"
 
 
 def _resolve_font_path() -> Path:
-    print(f"[Debug] フォントを探している場所: {_FONT_DIR.resolve()}")
-
-    # 1. まず本命フォントを探す
     for name in _PREFERRED_FONT_CANDIDATES:
         candidate = _FONT_DIR / name
         if candidate.exists():
-            print(f"[Info] 本命フォントを発見しました: {candidate.name}")
             return candidate
 
-    # 2. 次にフォールバック(Yomogi)を探す
     fallback = _FONT_DIR / _FALLBACK_FONT
     if fallback.exists():
-        print(f"[Info] Yomogiフォントを発見しました: {fallback.name}")
         return fallback
 
-    # 3. どちらも無ければ fonts フォルダ内にある既存の .ttf / .otf を探す
     font_files = list(_FONT_DIR.glob("*.otf")) + list(_FONT_DIR.glob("*.ttf"))
     if font_files:
-        print(f"[Info] フォルダ内のフォントを発見しました: {font_files[0].name}")
         return font_files[0]
 
-    # 4. 中身を表示してエラー
-    existing_files = [p.name for p in _FONT_DIR.glob("*")] if _FONT_DIR.exists() else "フォルダが存在しません"
-    print(f"[Debug] {_FONT_DIR} の中身: {existing_files}")
-
     raise FileNotFoundError(
-        f"フォントファイルが見つかりません！ '{_FONT_DIR}' 内を確認してください。"
+        f"フォントファイルが見つかりません。'{_FONT_DIR}' 内を確認してください。"
     )
 
 
-# 定数が定義されたあとにフォントを読み込む
 _font_path = _resolve_font_path()
 _font = ImageFont.truetype(str(_font_path), FONT_SIZE)
 _fraction_font = ImageFont.truetype(str(_font_path), FRACTION_FONT_SIZE)
 _signature_font = ImageFont.truetype(str(_font_path), 22)
 
 
-def _resolve_font_path() -> Path:
-    for name in _PREFERRED_FONT_CANDIDATES:
-        candidate = _FONT_DIR / name
-        if candidate.exists():
-            return candidate
-    return _FONT_DIR / _FALLBACK_FONT
+def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> int:
+    return draw.textbbox((0, 0), text, font=font)[2]
 
 
-_font_path = _resolve_font_path()
-_font = ImageFont.truetype(str(_font_path), FONT_SIZE)
-_fraction_font = ImageFont.truetype(str(_font_path), FRACTION_FONT_SIZE)
-_signature_font = ImageFont.truetype(str(_font_path), 22)
+def _wrap_by_pixel_width(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+) -> list[str]:
+    """
+    実際の描画幅(textbbox)を測りながら、max_widthを超えないように1文字ずつ足していく。
+    句読点・閉じ括弧・スペースの直後(_BREAK_CHARS)を優先的な改行ポイントにすることで、
+    「電場は「斜/面」」のような不自然な位置で切れるのを避ける。
+    """
+
+    if not text:
+        return [""]
+
+    lines: list[str] = []
+    current = ""
+    last_break_index = -1  # current内の「ここで区切ってよい」最後の位置
+
+    for ch in text:
+        test = current + ch
+
+        if _text_width(draw, test, font) <= max_width:
+            current = test
+            if ch in _BREAK_CHARS:
+                last_break_index = len(current)
+            continue
+
+        # 幅を超えた場合: 直前に良い区切り位置があればそこで折り返す
+        if last_break_index > 0:
+            lines.append(current[:last_break_index])
+            current = current[last_break_index:] + ch
+        else:
+            # 区切り位置が無ければ、その場で強制的に折り返す
+            lines.append(current)
+            current = ch
+        last_break_index = -1
+
+    if current:
+        lines.append(current)
+
+    return lines
+
+
+@dataclass
+class _DrawItem:
+    kind: str  # "text" | "formula" | "fraction"
+    payload: object
+    height: int
+
+
+def _build_draw_items(draw: ImageDraw.ImageDraw, blocks: list[Block]) -> list[_DrawItem]:
+    """
+    Blockのリストを、実際の描画幅で折り返し済みの _DrawItem リストに変換する。
+    ここで初めて「何行になるか」が確定するので、事前に高さの合計も分かるようになる。
+    """
+
+    items: list[_DrawItem] = []
+
+    for block in blocks:
+        if isinstance(block, FractionLine):
+            items.append(
+                _DrawItem(kind="fraction", payload=block, height=FRACTION_FONT_SIZE * 2 + 24)
+            )
+        elif isinstance(block, FormulaLine):
+            # 数式は折り返さない(多少幅からはみ出す可能性は許容する)
+            items.append(_DrawItem(kind="formula", payload=block.text, height=LINE_HEIGHT))
+        else:
+            wrapped = _wrap_by_pixel_width(draw, block.text, _font, MAX_WIDTH)
+            for line in wrapped:
+                items.append(_DrawItem(kind="text", payload=line, height=LINE_HEIGHT))
+
+    return items
 
 
 def _make_paper_background(width: int, height: int) -> Image.Image:
     """
     B5ルーズリーフ風の紙背景を作る。
     - わずかに色味のあるオフホワイト
-    - 少し青みのある横罏線
+    - 少し青みのある横罫線
     - 左側の赤い縦線(ルーズリーフの定番)
     - 気づく程度の紙の影(周囲をわずかに暗くする)
     """
@@ -112,14 +175,12 @@ def _make_paper_background(width: int, height: int) -> Image.Image:
     img = Image.new("RGB", (width, height), base_color)
     draw = ImageDraw.Draw(img)
 
-    # 横罫線(薄い青)
     rule_color = (185, 205, 232)
     y = MARGIN_TOP
     while y < height - MARGIN_BOTTOM // 2:
         draw.line([(30, y), (width - 20, y)], fill=rule_color, width=1)
         y += LINE_HEIGHT
 
-    # 左の赤い縦線(ルーズリーフ・大学ノートの定番デザイン)
     red_line_x = MARGIN_LEFT - 25
     draw.line(
         [(red_line_x, 10), (red_line_x, height - 10)],
@@ -127,14 +188,11 @@ def _make_paper_background(width: int, height: int) -> Image.Image:
         width=2,
     )
 
-    # 紙の影(周囲をわずかに暗くするビネット効果)
     shadow = Image.new("L", (width, height), 0)
     shadow_draw = ImageDraw.Draw(shadow)
     shadow_draw.rectangle([0, 0, width, height], fill=0)
     border = 18
-    shadow_draw.rectangle(
-        [border, border, width - border, height - border], fill=40
-    )
+    shadow_draw.rectangle([border, border, width - border, height - border], fill=40)
     shadow = shadow.filter(ImageFilter.GaussianBlur(border))
     dark_overlay = Image.new("RGB", (width, height), (0, 0, 0))
     img = Image.composite(img, dark_overlay, shadow.point(lambda p: 255 - p))
@@ -142,37 +200,28 @@ def _make_paper_background(width: int, height: int) -> Image.Image:
     return img
 
 
-def _draw_fraction(
-    draw: ImageDraw.ImageDraw, x: int, y: int, fraction: FractionLine
-) -> int:
-    """
-    分数(FractionLine)を「分子/横線/分母」の縦組みで描画する。
-    戻り値: この分数が占めた高さ(次の行のyを計算するため)。
-    """
+def _draw_fraction(draw: ImageDraw.ImageDraw, x: int, y: int, fraction: FractionLine) -> None:
+    """分数(FractionLine)を「分子/横線/分母」の縦組みで描画する。"""
 
     cursor_x = x
 
     if fraction.prefix:
         draw.text((cursor_x, y + 12), fraction.prefix + "  ", font=_font, fill=(30, 30, 40))
-        prefix_width = draw.textlength(fraction.prefix + "  ", font=_font)
-        cursor_x += int(prefix_width)
+        cursor_x += int(_text_width(draw, fraction.prefix + "  ", _font))
 
-    num_width = draw.textlength(fraction.numerator, font=_fraction_font)
-    den_width = draw.textlength(fraction.denominator, font=_fraction_font)
+    num_width = _text_width(draw, fraction.numerator, _fraction_font)
+    den_width = _text_width(draw, fraction.denominator, _fraction_font)
     bar_width = int(max(num_width, den_width)) + 12
     bar_x = cursor_x
 
-    # 分子(中央寄せ)
     draw.text(
         (bar_x + (bar_width - num_width) / 2, y),
         fraction.numerator,
         font=_fraction_font,
         fill=(30, 30, 40),
     )
-    # 横線
     bar_y = y + FRACTION_FONT_SIZE + 6
     draw.line([(bar_x, bar_y), (bar_x + bar_width, bar_y)], fill=(30, 30, 40), width=2)
-    # 分母(中央寄せ)
     draw.text(
         (bar_x + (bar_width - den_width) / 2, bar_y + 4),
         fraction.denominator,
@@ -180,7 +229,9 @@ def _draw_fraction(
         fill=(30, 30, 40),
     )
 
-    return FRACTION_FONT_SIZE * 2 + 24  # 分数が占める高さ
+    if fraction.suffix:
+        suffix_x = bar_x + bar_width + 10
+        draw.text((suffix_x, y + 12), fraction.suffix, font=_font, fill=(30, 30, 40))
 
 
 def render_note(text: str) -> bytes:
@@ -190,38 +241,29 @@ def render_note(text: str) -> bytes:
 
     blocks: list[Block] = format_for_note(text)
 
-    # まず高さを見積もる(分数は通常行より高さを取るため)
-    total_height = MARGIN_TOP + MARGIN_BOTTOM
-    for block in blocks:
-        if isinstance(block, FractionLine):
-            total_height += FRACTION_FONT_SIZE * 2 + 24
-        else:
-            total_height += LINE_HEIGHT
+    # 折り返しにはtextbboxが必要なので、まず仮の画像でdrawを作ってから折り返し・高さ計算を行う
+    probe_img = Image.new("RGB", (IMAGE_WIDTH, 10))
+    probe_draw = ImageDraw.Draw(probe_img)
+    draw_items = _build_draw_items(probe_draw, blocks)
 
-    total_height += 60  # 末尾の signature 用の余白
+    total_height = MARGIN_TOP + MARGIN_BOTTOM + 60  # 60は末尾の signature 用
+    for item in draw_items:
+        total_height += item.height
 
     img = _make_paper_background(IMAGE_WIDTH, max(total_height, 300))
     draw = ImageDraw.Draw(img)
 
     y = MARGIN_TOP
-    for block in blocks:
-        if isinstance(block, FractionLine):
-            used_height = _draw_fraction(draw, MARGIN_LEFT, y, block)
-            y += used_height
-        else:
-            if block.text:
-                x_jitter = random.uniform(-2, 2)
-                draw.text(
-                    (MARGIN_LEFT + x_jitter, y),
-                    block.text,
-                    font=_font,
-                    fill=(30, 30, 40),
-                )
-            y += LINE_HEIGHT
+    for item in draw_items:
+        if item.kind == "fraction":
+            _draw_fraction(draw, MARGIN_LEFT, y, item.payload)
+        elif item.payload:
+            x_jitter = random.uniform(-2, 2)
+            draw.text((MARGIN_LEFT + x_jitter, y), item.payload, font=_font, fill=(30, 30, 40))
+        y += item.height
 
-    # 右下に小さく "Aster" の署名
     signature = "Aster"
-    sig_width = draw.textlength(signature, font=_signature_font)
+    sig_width = _text_width(draw, signature, _signature_font)
     draw.text(
         (IMAGE_WIDTH - MARGIN_RIGHT - sig_width, y + 10),
         signature,

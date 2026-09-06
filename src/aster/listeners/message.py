@@ -71,7 +71,7 @@ class MessageListener(commands.Cog):
         async with message.channel.typing():
 
             try:
-                reply, emoji, is_note = ask_gemini(
+                chat_intro, reply, emoji, is_note = ask_gemini(
                     message.content,
                     history_context=history_context,
                     long_term_notes=long_term_notes,
@@ -97,12 +97,16 @@ class MessageListener(commands.Cog):
                 return
 
         # Aster自身の発言も短期記憶に残す(自分の発言と矛盾しないため)
-        self.history.add(channel_id, "Aster", reply)
+        # ノート本体だけでなく、チャット前置きがあればそちらも記録しておく
+        note_for_history = f"{chat_intro} {reply}".strip() if chat_intro else reply
+        self.history.add(channel_id, "Aster", note_for_history)
 
         if is_note:
             # 詳しい解説・数式は手書きノート画像にして送る
-            # (画像生成には少し時間がかかるので、先に一言挟んでから送る)
-            await message.channel.send(get_note_wait_message())
+            # (画像生成には少し時間がかかるので、先に一言挟んでから送る。
+            #  Geminiが自分でキャラクターらしい前置きを書いていればそれを使い、
+            #  書いていなければ用意しておいた既定のセリフにフォールバックする)
+            await message.channel.send(chat_intro or get_note_wait_message())
 
             try:
                 async with message.channel.typing():

@@ -90,10 +90,19 @@ def _strip_markdown(text: str) -> str:
     return text
 
 
+# 分数のprefix/suffixとして許容する最大文字数。
+# これを超える場合は「短い前置き」の範囲を逸脱しているとみなし、
+# 分数化を諦めて通常のFormulaLine/TextLineとして扱う。
+# (番号付き説明文と数式が混ざった長い行を無理に分数化すると、
+#  はみ出したprefix/suffixが紙の右端で切れてしまうため)
+_MAX_AFFIX_LENGTH = 12
+
+
 def _try_parse_fraction(line: str) -> FractionLine | None:
     """
     "E = V/(2πr)" のような、単純な分数を含む行を検出する。
-    分数の前後にテキストが残っていれば prefix / suffix として保持する。
+    分数の前後にテキストが残っていれば prefix / suffix として保持するが、
+    それが長すぎる場合は分数化しない(呼び出し側でFormulaLine等として扱われる)。
     複数の分数が混在する複雑な式は対象外(そのままFormulaLineとして扱われる)。
     """
 
@@ -115,6 +124,9 @@ def _try_parse_fraction(line: str) -> FractionLine | None:
 
     prefix = line[: match.start()].strip()
     suffix = line[match.end() :].strip()
+
+    if len(prefix) > _MAX_AFFIX_LENGTH or len(suffix) > _MAX_AFFIX_LENGTH:
+        return None
 
     return FractionLine(
         numerator=numerator, denominator=denominator, prefix=prefix, suffix=suffix

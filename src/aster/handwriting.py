@@ -152,8 +152,12 @@ def _build_draw_items(draw: ImageDraw.ImageDraw, blocks: list[Block]) -> list[_D
                 _DrawItem(kind="fraction", payload=block, height=FRACTION_FONT_SIZE * 2 + 24)
             )
         elif isinstance(block, FormulaLine):
-            # 数式は折り返さない(多少幅からはみ出す可能性は許容する)
-            items.append(_DrawItem(kind="formula", payload=block.text, height=LINE_HEIGHT))
+            # 数式もスペース区切りで折り返す(記号の途中では絶対に切らない)。
+            # _wrap_by_pixel_width は " " も優先改行ポイントに含めているため、
+            # 単語(トークン)の途中で改行されることはない
+            wrapped = _wrap_by_pixel_width(draw, block.text, _font, MAX_WIDTH)
+            for line in wrapped:
+                items.append(_DrawItem(kind="formula", payload=line, height=LINE_HEIGHT))
         else:
             wrapped = _wrap_by_pixel_width(draw, block.text, _font, MAX_WIDTH)
             for line in wrapped:

@@ -26,10 +26,33 @@ GEMINI_MODEL_LIGHT = os.getenv("GEMINI_MODEL_LIGHT", "gemini-3.5-flash-lite")
 # Bot設定
 BOT_NAME = "Aster"
 
+# VOICEVOX(音声合成エンジン)
+# エンジン自体は別アプリとして起動しておく必要がある(公式サイトからダウンロード)
+# デフォルトのURLはVOICEVOXアプリ起動時にlocalhostで立つAPIのもの
+VOICEVOX_URL = os.getenv("VOICEVOX_URL", "http://127.0.0.1:50021")
+
+# 話者ID。ナースロボ＿タイプT(ノーマル)を既定値にしているが、
+# VOICEVOXのバージョンによってIDがずれることがあるため、
+# 実際に使う前に起動中のエンジンの /speakers エンドポイントで確認すること
+VOICEVOX_SPEAKER_ID = int(os.getenv("VOICEVOX_SPEAKER_ID", "47"))
+
+# VC参加までのランダムな間(ユーザーがVCに入ってから、少し遅れてAsterが入る演出)
+VOICE_JOIN_DELAY_MIN = 3.0
+VOICE_JOIN_DELAY_MAX = 7.0
+
+# ユーザーがVCから抜けてから、Asterも退出するまでの猶予(誤って抜けた場合等を考慮)
+VOICE_USER_LEFT_GRACE_SECONDS = 120  # 2分
+
+# テキストでの会話が止まってからAsterがVC退出するまでの時間(ランダム幅)
+VOICE_IDLE_TIMEOUT_MIN = 180  # 3分
+VOICE_IDLE_TIMEOUT_MAX = 300  # 5分
+
 # 読み込むCog
 COGS = [
     "aster.cogs.ping",
     "aster.cogs.help",
     # AI
     "aster.listeners.message",
+    # Voice
+    "aster.listeners.voice_state",
 ]

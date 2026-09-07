@@ -17,6 +17,7 @@ from aster.memory import ConversationHistory
 from aster.note_messages import get_note_wait_message
 from aster.utils.logger import logger
 from aster.reply_manager import ReplyManager
+from aster.voice import VoicevoxError, synthesize
 
 # 何秒発言が無かったら「会話が一区切りついた」とみなし、
 # 長期記憶の自動抽出を実行するか
@@ -166,6 +167,19 @@ class MessageListener(commands.Cog):
             #  ここで重ねてtypingを出す必要は無い)
             sent_messages = await self.reply_manager.send(message.channel, reply)
 
+            # VCに参加している場合は、テキストの返信を読み上げる。
+            # ノート画像モードの時は読み上げない(数式・詳しい解説は
+            # 声だけで聞いても分かりにくいため、画像を見てもらう想定)。
+            if message.guild is not None and message.guild.voice_client is not None:
+                await self._speak(message.guild, reply)
+
+        # VCに参加している場合、会話が続いている合図として
+        # アイドルタイマー(会話が止まったら退出するタイマー)をリセットする
+        if message.guild is not None:
+            voice_cog = self.bot.get_cog("VoiceStateListener")
+            if voice_cog is not None:
+                voice_cog.notify_activity(message.guild)
+
         # 絵文字が指定されていれば、最後に送ったメッセージにリアクションを付ける
         # (普段は淡々としているキャラなので、Geminiが「よほど心が動いた時」だけ
         #  絵文字を返す想定 → ほとんどの場合はNoneで何も付かない)
@@ -180,6 +194,36 @@ class MessageListener(commands.Cog):
         # 会話が一区切りついたら長期記憶を更新するようスケジュールする
         self._schedule_memory_extraction(user_id, display_name, channel_id)
 
+
+    async def _speak(self, guild: discord.Guild, text: str) -> None:
+        """
+        VCに参加している場合、テキストをVOICEVOXで音声合成してから再生する。
+
+        音声合成はブロッキング処理(HTTP通信)なので、asyncio.to_threadで
+        別スレッドに逃がし、Botのイベントループ全体が止まらないようにする。
+        """
+
+        voice_client = guild.voice_client
+        if voice_client is None:
+            return
+
+        try:
+            wav_bytes = await asyncio.to_thread(synthesize, text)
+        except VoicevoxError as e:
+            logger.warning(f"音声合成に失敗しました(VC自体には影響なし): {e}")
+            return
+
+        try:
+            # 前の発言がまだ再生中なら、区切りが悪くならないよう待ってから再生する
+            while voice_client.is_playing():
+                await asyncio.sleep(0.2)
+
+            audio_source = discord.FFmpegPCMAudio(
+                io.BytesIO(wav_bytes), pipe=True
+            )
+            voice_client.play(audio_source)
+        except discord.ClientException as e:
+            logger.warning(f"音声の再生に失敗しました: {e}")
 
     async def _extract_pdf(self, message: discord.Message) -> bytes | None:
         """

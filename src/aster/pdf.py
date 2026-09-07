@@ -17,7 +17,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF
 
 from aster.ai import describe_image
 

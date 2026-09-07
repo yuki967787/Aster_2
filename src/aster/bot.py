@@ -10,6 +10,7 @@ class Aster(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.voice_states = True  # VCの入退室を検知するために必要
 
         super().__init__(
             command_prefix="!",

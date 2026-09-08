@@ -46,6 +46,20 @@ MIN_AUDIO_SECONDS = 0.35
 # Whisperモデル
 WHISPER_MODEL = "base"
 
+# Whisperが「無音」と推定する確率がこの値以上の区間は、
+# 環境音による誤認識を防ぐため文字起こし結果から除外する。
+NO_SPEECH_PROBABILITY_THRESHOLD = 0.6
+
+
+def _load_whisper_model():
+    """Whisperのimportとモデルロードを同期的に行うワーカー関数。"""
+
+    # torchを読み込む ``import whisper`` 自体にも時間が掛かることがある。
+    # この関数は必ず ``asyncio.to_thread`` 経由で実行する。
+    import whisper
+
+    return whisper.load_model(WHISPER_MODEL)
+
 
 @dataclass
 class UserAudioBuffer:
@@ -112,7 +126,7 @@ class VoiceReceiveManager:
 
         # Whisperモデル
         self._whisper = None
-        self._whisper_loading = False
+        self._whisper_load_task: asyncio.Task | None = None
 
     async def start(
         self,
@@ -320,26 +334,17 @@ class VoiceReceiveManager:
         if self._whisper is not None:
             return self._whisper
 
-        if self._whisper_loading:
-            while self._whisper is None:
-                await asyncio.sleep(0.1)
-
-            return self._whisper
-
-        self._whisper_loading = True
-
-        try:
-            import whisper
-
+        if self._whisper_load_task is None:
             logger.info(
                 "Whisperモデルをロードしています: %s",
                 WHISPER_MODEL,
             )
-
-            self._whisper = await asyncio.to_thread(
-                whisper.load_model,
-                WHISPER_MODEL,
+            self._whisper_load_task = asyncio.create_task(
+                asyncio.to_thread(_load_whisper_model)
             )
+
+        try:
+            self._whisper = await self._whisper_load_task
 
             logger.info(
                 "Whisperモデルのロードが完了しました"
@@ -347,8 +352,11 @@ class VoiceReceiveManager:
 
             return self._whisper
 
-        finally:
-            self._whisper_loading = False
+        except Exception:
+            # 失敗時は次の発話で再試行できるよう、失敗したTaskを破棄する。
+            if self._whisper is None:
+                self._whisper_load_task = None
+            raise
 
     async def _transcribe(
         self,
@@ -413,12 +421,37 @@ class VoiceReceiveManager:
                 fp16=False,
                 temperature=0,
                 condition_on_previous_text=False,
+                no_speech_threshold=NO_SPEECH_PROBABILITY_THRESHOLD,
             )
 
-            text = result.get(
-                "text",
-                "",
+            segments = result.get("segments", [])
+            speech_segments = [
+                segment
+                for segment in segments
+                if segment.get("no_speech_prob", 0.0)
+                < NO_SPEECH_PROBABILITY_THRESHOLD
+            ]
+
+            if segments and not speech_segments:
+                logger.info(
+                    "Whisperが無音と判定したため文字起こしを破棄しました: "
+                    "no_speech_prob=%s",
+                    [
+                        round(segment.get("no_speech_prob", 0.0), 3)
+                        for segment in segments
+                    ],
+                )
+                return ""
+
+            # 低確率の無音区間を含めず、発話と判定された区間だけを採用する。
+            text = " ".join(
+                segment.get("text", "").strip()
+                for segment in speech_segments
             ).strip()
+
+            # segmentsを返さない実装との互換性も残す。
+            if not segments:
+                text = result.get("text", "").strip()
 
             logger.info(
                 "Whisperの文字起こしが完了しました: %r",

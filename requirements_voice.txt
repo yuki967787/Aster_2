@@ -1,0 +1,8 @@
+discord.py
+PyNaCl
+davey
+discord-ext-voice-recv
+openai-whisper
+soundfile
+numpy
+requests

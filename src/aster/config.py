@@ -55,4 +55,6 @@ COGS = [
     "aster.listeners.message",
     # Voice
     "aster.listeners.voice_state",
+    # Voice Recieve
+    "aster.listeners.voice_receive",
 ]

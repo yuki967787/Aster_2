@@ -22,7 +22,7 @@ import asyncio
 import random
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, voice_recv
 
 from aster.config import (
     VOICE_IDLE_TIMEOUT_MAX,
@@ -76,9 +76,22 @@ class VoiceStateListener(commands.Cog):
             return
 
         try:
-            await channel.connect()
+            # 【修正】通常のVoiceClientだと音声を受信できない(送信専用)。
+            # voice_receive.py(Whisperでの音声認識)がis instance チェックで
+            # VoiceRecvClientを要求しているため、ここで明示的に指定する必要がある。
+            await channel.connect(cls=voice_recv.VoiceRecvClient)
             logger.info(f"VCに参加しました: {channel.name}")
             self._reset_idle_timer(guild)
+
+            # 接続しただけでは音声受信は始まらないため、
+            # voice_receive.py側の受信処理を明示的に開始する
+            voice_receive_cog = self.bot.get_cog("VoiceReceiveListener")
+            if voice_receive_cog is not None:
+                await voice_receive_cog.start_for_guild(guild)
+            else:
+                logger.warning(
+                    "VoiceReceiveListenerが見つからないため、音声受信を開始できません"
+                )
         except discord.ClientException as e:
             logger.warning(f"VCへの参加に失敗しました: {e}")
 
@@ -119,6 +132,7 @@ class VoiceStateListener(commands.Cog):
             # 猶予の間に別の人が入ってきていた場合は退出しない
             return
 
+        self._stop_voice_receive(guild)
         await voice_client.disconnect()
         logger.info(f"VCから退出しました(誰もいなくなったため): {guild.name}")
 
@@ -148,8 +162,16 @@ class VoiceStateListener(commands.Cog):
         if voice_client is None:
             return
 
+        self._stop_voice_receive(guild)
         await voice_client.disconnect()
         logger.info(f"VCから退出しました(会話が止まったため): {guild.name}")
+
+    def _stop_voice_receive(self, guild: discord.Guild) -> None:
+        """退出前に音声受信(Whisper文字起こし)を止めておく。"""
+
+        voice_receive_cog = self.bot.get_cog("VoiceReceiveListener")
+        if voice_receive_cog is not None:
+            voice_receive_cog.stop_for_guild(guild)
 
     def notify_activity(self, guild: discord.Guild) -> None:
         """
